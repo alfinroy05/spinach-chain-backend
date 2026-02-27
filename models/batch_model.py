@@ -8,50 +8,41 @@ class BatchState:
     DELIVERED = "Delivered"
     REJECTED = "Rejected"
 
+
 class SpinachBatch(db.Model):
     __tablename__ = "spinach_batches"
 
     id = db.Column(db.Integer, primary_key=True)
 
-    # 🔹 Unique batch ID (matches blockchain batchId)
     batch_id = db.Column(db.String(100), unique=True, nullable=False)
 
-    # 🔹 IPFS content identifier
     ipfs_cid = db.Column(db.String(255), nullable=True)
+    merkle_root = db.Column(db.String(66), nullable=True)
 
-    # 🔹 Merkle root stored on-chain
-    merkle_root = db.Column(db.String(66), nullable=True)  # 0x + 64 hex chars
-
-    # 🔹 Wallet addresses
     farmer_address = db.Column(db.String(42), nullable=False)
     current_owner = db.Column(db.String(42), nullable=False)
 
-    # 🔹 Blockchain transaction hash
     blockchain_tx_hash = db.Column(db.String(66), nullable=True)
 
-    # 🔹 Batch lifecycle state
-    state = db.Column(
-        db.String(50),
-        default=BatchState.HARVESTED
+    state = db.Column(db.String(50), default=BatchState.HARVESTED)
+
+    cold_chain_violated = db.Column(db.Boolean, default=False)
+
+    # 🔹 Link to Farm
+    farm_id = db.Column(
+        db.Integer,
+        db.ForeignKey("farms.id"),
+        nullable=True
     )
 
-    # 🔹 Cold chain violation flag
-    cold_chain_violated = db.Column(
-        db.Boolean,
-        default=False
-    )
+    # 🔹 Stage Timestamps
+    harvest_timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+    transit_timestamp = db.Column(db.DateTime, nullable=True)
+    storage_timestamp = db.Column(db.DateTime, nullable=True)
+    delivery_timestamp = db.Column(db.DateTime, nullable=True)
+    rejection_timestamp = db.Column(db.DateTime, nullable=True)
 
-    # 🔹 Timestamps
-    harvest_timestamp = db.Column(
-        db.DateTime,
-        default=datetime.utcnow
-    )
-
-    created_at = db.Column(
-        db.DateTime,
-        default=datetime.utcnow
-    )
-
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(
         db.DateTime,
         default=datetime.utcnow,
@@ -73,6 +64,10 @@ class SpinachBatch(db.Model):
             "state": self.state,
             "cold_chain_violated": self.cold_chain_violated,
             "harvest_timestamp": self.harvest_timestamp.isoformat() if self.harvest_timestamp else None,
+            "transit_timestamp": self.transit_timestamp.isoformat() if self.transit_timestamp else None,
+            "storage_timestamp": self.storage_timestamp.isoformat() if self.storage_timestamp else None,
+            "delivery_timestamp": self.delivery_timestamp.isoformat() if self.delivery_timestamp else None,
+            "rejection_timestamp": self.rejection_timestamp.isoformat() if self.rejection_timestamp else None,
             "predicted_yield": self.predicted_yield,
             "disease_probability": self.disease_probability,
             "health_score": self.health_score,
