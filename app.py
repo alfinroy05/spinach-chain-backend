@@ -1,6 +1,6 @@
 import logging
 from datetime import timedelta
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 from flask_cors import CORS
 from config import Config
 from database.db import init_db
@@ -14,12 +14,13 @@ from routes.batch_routes import batch_bp
 from routes.ai_routes import ai_bp
 from routes.auth_routes import auth_bp
 
-# Models (important for db.create_all)
-from models.batch_model import SpinachBatch
-from models.user_model import User
-from models.farm_model import Farm
+# 🔥 AI SERVICE (Preload models once)
+from services.ai_service import load_models
 
 
+# ======================================================
+# 🔥 CREATE APP FACTORY
+# ======================================================
 
 def create_app():
     app = Flask(__name__)
@@ -30,22 +31,21 @@ def create_app():
     app.config.from_object(Config)
 
     # --------------------------------------------------
-    # 🔐 JWT CONFIGURATION (FIXED PROPERLY)
+    # 🔐 JWT CONFIGURATION
     # --------------------------------------------------
     app.config["JWT_SECRET_KEY"] = "spinachchain_super_secure_fixed_key_2026"
-
-    # ✅ MUST use timedelta (NOT integer)
     app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(hours=24)
-
-    # Explicit JWT header configuration
     app.config["JWT_TOKEN_LOCATION"] = ["headers"]
     app.config["JWT_HEADER_NAME"] = "Authorization"
     app.config["JWT_HEADER_TYPE"] = "Bearer"
 
-    
+    # --------------------------------------------------
+    # 🔥 IMAGE UPLOAD LIMIT (Important for AI)
+    # --------------------------------------------------
+    app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024  # 10MB limit
 
     # --------------------------------------------------
-    # Logging
+    # Logging Configuration
     # --------------------------------------------------
     logging.basicConfig(
         level=logging.INFO,
@@ -55,17 +55,23 @@ def create_app():
     logging.info("🚀 Starting SpinachChain Backend...")
 
     # --------------------------------------------------
-    # ✅ PROPER CORS CONFIGURATION
+    # ✅ GLOBAL CORS CONFIG
     # --------------------------------------------------
     CORS(
         app,
-        supports_credentials=True,
-        resources={
-            r"/api/*": {
-                "origins": "http://localhost:3000"
-            }
-        }
+        resources={r"/api/*": {"origins": "http://localhost:3000"}},
+        allow_headers=["Content-Type", "Authorization"],
+        methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        supports_credentials=True
     )
+
+    # --------------------------------------------------
+    # 🔥 Allow OPTIONS to bypass JWT
+    # --------------------------------------------------
+    @app.before_request
+    def handle_preflight():
+        if request.method == "OPTIONS":
+            return app.make_default_options_response()
 
     # --------------------------------------------------
     # Initialize Extensions
@@ -79,11 +85,23 @@ def create_app():
     try:
         init_db(app)
         logging.info("✅ Database initialized successfully")
+
         from flask_migrate import Migrate
         from database.db import db
-        migrate = Migrate(app, db)
+        Migrate(app, db)
+
     except Exception as e:
         logging.error(f"❌ Database initialization failed: {e}")
+        raise e
+
+    # --------------------------------------------------
+    # 🔥 PRELOAD AI MODELS (Only Once)
+    # --------------------------------------------------
+    try:
+        load_models()
+        logging.info("✅ AI Models Loaded Successfully")
+    except Exception as e:
+        logging.error(f"❌ AI Model Loading Failed: {e}")
         raise e
 
     # --------------------------------------------------
@@ -94,8 +112,6 @@ def create_app():
     app.register_blueprint(ai_bp, url_prefix="/api")
     app.register_blueprint(auth_bp, url_prefix="/api/auth")
 
-    
-
     logging.info("✅ Blueprints registered")
 
     # --------------------------------------------------
@@ -105,7 +121,8 @@ def create_app():
     def health_check():
         return jsonify({
             "status": "SpinachChain Backend Running",
-            "environment": "development"
+            "environment": "development",
+            "ai_loaded": True
         }), 200
 
     # --------------------------------------------------
@@ -123,22 +140,35 @@ def create_app():
     def expired_token_callback(jwt_header, jwt_payload):
         return jsonify({"error": "Token expired"}), 401
 
-    return app
-    
+    # --------------------------------------------------
+    # Global Error Handler
+    # --------------------------------------------------
+    @app.errorhandler(413)
+    def file_too_large(e):
+        return jsonify({"error": "Uploaded file too large"}), 413
 
-# --------------------------------------------------
-# Create App Instance
-# --------------------------------------------------
+    @app.errorhandler(500)
+    def internal_error(e):
+        logging.error(f"Internal Server Error: {e}")
+        return jsonify({"error": "Internal server error"}), 500
+
+    return app
+
+
+# ======================================================
+# 🔥 CREATE APP INSTANCE
+# ======================================================
+
 app = create_app()
 
 
-# --------------------------------------------------
-# 🔥 RUN WITHOUT DEBUG RELOADER
-# --------------------------------------------------
+# ======================================================
+# 🚀 RUN SERVER
+# ======================================================
+
 if __name__ == "__main__":
     app.run(
         host="0.0.0.0",
         port=5000,
-        debug=False,
-        use_reloader=False
+        debug=True
     )

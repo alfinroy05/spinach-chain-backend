@@ -8,45 +8,51 @@ from datetime import datetime
 sensor_bp = Blueprint("sensor_bp", __name__)
 
 
-# 🔹 ESP32 Sensor Data Endpoint
+# =====================================================
+# ADD SENSOR DATA (ESP32 / IoT DEVICE)
+# =====================================================
 @sensor_bp.route("/sensor-data/<batch_id>", methods=["POST"])
 def receive_sensor_data(batch_id):
     try:
+        # Find batch using business ID
         batch = SpinachBatch.query.filter_by(batch_id=batch_id).first()
 
         if not batch:
             return jsonify({"error": "Batch not found"}), 404
 
-        data = request.json
+        # Parse JSON safely
+        data = request.get_json(force=True)
 
-        # 🔹 Validate required fields
-        required_fields = [
-            "temperature",
-            "humidity",
-            "soil_moisture",
-            "nitrogen",
-            "phosphorus",
-            "potassium"
-        ]
+        print("Incoming sensor payload:", data)
+
+        if not data:
+            return jsonify({"error": "Invalid JSON payload"}), 400
+
+        # Validate required fields
+        required_fields = ["N", "P", "K", "temperature", "humidity"]
 
         for field in required_fields:
             if field not in data:
                 return jsonify({"error": f"{field} is required"}), 400
 
-        # 🔹 Generate SHA256 integrity hash
+        # Convert values safely
+        nitrogen = float(data["N"])
+        phosphorus = float(data["P"])
+        potassium = float(data["K"])
+        temperature = float(data["temperature"])
+        humidity = float(data["humidity"])
+
+        # Generate integrity hash
         data_hash = hash_sensor_reading(data)
 
+        # Store sensor reading
         reading = SensorReading(
-            batch_id=batch_id,
-            temperature=data["temperature"],
-            humidity=data["humidity"],
-            soil_moisture=data["soil_moisture"],
-            nitrogen=data["nitrogen"],
-            phosphorus=data["phosphorus"],
-            potassium=data["potassium"],
-            ph_level=data.get("ph_level"),
-            light_intensity=data.get("light_intensity"),
-            cold_chain_temperature=data.get("cold_chain_temperature"),
+            batch_id=batch.id,
+            nitrogen=nitrogen,
+            phosphorus=phosphorus,
+            potassium=potassium,
+            temperature=temperature,
+            humidity=humidity,
             data_hash=data_hash,
             created_at=datetime.utcnow()
         )
@@ -56,27 +62,34 @@ def receive_sensor_data(batch_id):
 
         return jsonify({
             "message": "Sensor data stored successfully",
-            "batch_id": batch_id,
+            "batch_id": batch.batch_id,
             "data_hash": data_hash
         }), 201
 
     except Exception as e:
+        db.session.rollback()
+        print("Sensor insert error:", str(e))
         return jsonify({"error": str(e)}), 500
 
 
-# 🔹 Get All Sensor Data for a Batch
+# =====================================================
+# GET SENSOR DATA FOR A BATCH (Dashboard)
+# =====================================================
 @sensor_bp.route("/sensor-data/<batch_id>", methods=["GET"])
 def get_sensor_data(batch_id):
     try:
-        readings = SensorReading.query.filter_by(batch_id=batch_id).all()
+        batch = SpinachBatch.query.filter_by(batch_id=batch_id).first()
 
-        if not readings:
-            return jsonify({"message": "No sensor data found"}), 404
+        if not batch:
+            return jsonify({"error": "Batch not found"}), 404
+
+        readings = SensorReading.query.filter_by(batch_id=batch.id).all()
 
         return jsonify({
-            "batch_id": batch_id,
+            "batch_id": batch.batch_id,
             "sensor_readings": [r.to_dict() for r in readings]
         }), 200
 
     except Exception as e:
+        print("Fetch sensor error:", str(e))
         return jsonify({"error": str(e)}), 500
