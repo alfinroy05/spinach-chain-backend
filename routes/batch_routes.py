@@ -6,8 +6,35 @@ from models.sensor_model import SensorReading
 from models.user_model import User
 from services.merkle_service import generate_merkle_root
 from services.ipfs_service import upload_to_ipfs
-from services.ai_service import run_ai_analysis, generate_metadata
 from utils.hash_utils import hash_sensor_reading
+import os
+
+# ==================================================
+# 🔥 ENV CHECK (IMPORTANT)
+# ==================================================
+ENV = os.getenv("FLASK_ENV", "production")
+
+# ==================================================
+# 🔥 CONDITIONAL AI IMPORT (FIXES NUMPY ERROR)
+# ==================================================
+if ENV != "production":
+    from services.ai_service import run_ai_analysis, generate_metadata
+else:
+    # Dummy fallback (SAFE FOR DEPLOYMENT)
+    def run_ai_analysis(sensor_data, image_file):
+        return {
+            "health_score": 50,
+            "disease_class": "Unknown (AI disabled)",
+            "confidence": 0
+        }
+
+    def generate_metadata(batch, ai_result):
+        return {
+            "batch_id": batch.batch_id,
+            "ai_enabled": False,
+            "note": "AI disabled in production"
+        }
+
 
 batch_bp = Blueprint("batch_bp", __name__)
 
@@ -24,7 +51,7 @@ def get_current_user():
 
 
 # ==================================================
-# 🔹 CREATE BATCH (OFF-CHAIN METADATA ONLY)
+# 🔹 CREATE BATCH
 # ==================================================
 @batch_bp.route("/create-batch", methods=["POST"])
 @jwt_required()
@@ -51,7 +78,7 @@ def create_batch():
         db.session.commit()
 
         return jsonify({
-            "message": "Batch metadata created",
+            "message": "Batch created",
             "batch": new_batch.to_dict()
         }), 201
 
@@ -141,7 +168,7 @@ def add_sensor_reading(batch_id):
 
 
 # ==================================================
-# 🔥 FINALIZE BATCH (AI + MERKLE + IPFS)
+# 🔥 FINALIZE BATCH
 # ==================================================
 @batch_bp.route("/finalize-batch/<batch_id>", methods=["POST"])
 @jwt_required()
@@ -157,40 +184,42 @@ def finalize_batch(batch_id):
 
         readings = SensorReading.query.filter_by(batch_id=batch_id).all()
         if not readings:
-            return jsonify({"error": "No sensor data found"}), 400
+            return jsonify({"error": "No sensor data"}), 400
 
-        image_file = request.files.get("image")
-        if not image_file:
-            return jsonify({"error": "Image required for AI analysis"}), 400
-
-        # 🔥 Convert DB sensor readings to list of dicts
         sensor_data = [r.to_dict() for r in readings]
 
-        # 🔥 RUN AI ANALYSIS
-        ai_result = run_ai_analysis(sensor_data, image_file)
+        # 🔥 SAFE AI CALL
+        image_file = request.files.get("image")
 
-        # 🔥 GENERATE MERKLE ROOT
+        if ENV == "production":
+            ai_result = run_ai_analysis(sensor_data, None)
+        else:
+            if not image_file:
+                return jsonify({"error": "Image required"}), 400
+            ai_result = run_ai_analysis(sensor_data, image_file)
+
+        # 🔥 MERKLE ROOT
         hashes = [r.data_hash for r in readings if r.data_hash]
         merkle_root = generate_merkle_root(hashes)
 
-        # 🔥 BUILD METADATA (WITH AI)
+        # 🔥 METADATA
         metadata = generate_metadata(batch, ai_result)
         metadata["merkle_root"] = merkle_root
         metadata["sensor_readings"] = sensor_data
 
-        # 🔥 UPLOAD TO IPFS
+        # 🔥 IPFS
         ipfs_cid = upload_to_ipfs(metadata)
 
-        # 🔥 SAVE TO DB
+        # 🔥 SAVE
         batch.merkle_root = merkle_root
         batch.ipfs_cid = ipfs_cid
-        batch.health_score = ai_result["health_score"]
-        batch.grade = ai_result["disease_class"]
+        batch.health_score = ai_result.get("health_score", 50)
+        batch.grade = ai_result.get("disease_class", "Unknown")
 
         db.session.commit()
 
         return jsonify({
-            "message": "Batch finalized successfully",
+            "message": "Batch finalized",
             "merkle_root": merkle_root,
             "ipfs_cid": ipfs_cid,
             "ai_result": ai_result

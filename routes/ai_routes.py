@@ -3,11 +3,39 @@ from flask_jwt_extended import get_jwt_identity, jwt_required
 from database.db import db
 from models.batch_model import SpinachBatch
 from models.sensor_model import SensorReading
-from services.ai_service import run_ai_analysis, generate_metadata
 from services.ipfs_service import upload_json_to_ipfs
 from services.merkle_service import generate_merkle_root
+import os
 
 ai_bp = Blueprint("ai_bp", __name__)
+
+# ======================================================
+# 🔥 ENV CHECK
+# ======================================================
+ENV = os.getenv("FLASK_ENV", "production")
+
+# ======================================================
+# 🔥 CONDITIONAL AI IMPORT (IMPORTANT FIX)
+# ======================================================
+if ENV != "production":
+    from services.ai_service import run_ai_analysis, generate_metadata
+else:
+    # Dummy AI functions for production
+    def run_ai_analysis(sensor_data, image_file):
+        return {
+            "environmental_risk": 0,
+            "disease_probability": 0,
+            "health_score": 50,
+            "anomaly_detected": False,
+            "disease_class": "Unknown (AI disabled)"
+        }
+
+    def generate_metadata(batch, ai_result):
+        return {
+            "batch_id": batch.batch_id,
+            "ai_enabled": False,
+            "note": "AI disabled in production"
+        }
 
 
 # ======================================================
@@ -21,14 +49,14 @@ def predict_batch(batch_id):
         current_user = get_jwt_identity()
 
         # --------------------------------------------------
-        # 🔹 Fetch Batch (business ID)
+        # 🔹 Fetch Batch
         # --------------------------------------------------
         batch = SpinachBatch.query.filter_by(batch_id=batch_id).first()
         if not batch:
             return jsonify({"error": "Batch not found"}), 404
 
         # --------------------------------------------------
-        # 🔹 Fetch Sensor Data (integer FK)
+        # 🔹 Fetch Sensor Data
         # --------------------------------------------------
         readings = SensorReading.query.filter_by(batch_id=batch.id).all()
         if not readings:
@@ -37,14 +65,16 @@ def predict_batch(batch_id):
         sensor_data = [r.to_dict() for r in readings]
 
         # --------------------------------------------------
-        # 🔹 Validate Image Upload
+        # 🔹 Image handling
         # --------------------------------------------------
         image_file = request.files.get("image")
-        if not image_file:
+
+        # In production → skip image requirement
+        if ENV != "production" and not image_file:
             return jsonify({"error": "Image file is required"}), 400
 
         # --------------------------------------------------
-        # 🔥 RUN AI ANALYSIS
+        # 🔥 AI ANALYSIS (SAFE)
         # --------------------------------------------------
         try:
             ai_result = run_ai_analysis(sensor_data, image_file)
@@ -55,7 +85,7 @@ def predict_batch(batch_id):
             }), 500
 
         # --------------------------------------------------
-        # 🔹 Update Batch with AI Results
+        # 🔹 Update DB
         # --------------------------------------------------
         try:
             batch.environmental_risk = ai_result.get("environmental_risk")
@@ -74,19 +104,19 @@ def predict_batch(batch_id):
             }), 500
 
         # --------------------------------------------------
-        # 🌳 Generate Merkle Root (use stored hashes!)
+        # 🌳 MERKLE ROOT
         # --------------------------------------------------
         try:
             hashes = [r.data_hash for r in readings if r.data_hash]
             merkle_root = generate_merkle_root(hashes)
         except Exception as merkle_error:
             return jsonify({
-                "error": "Merkle root generation failed",
+                "error": "Merkle root failed",
                 "details": str(merkle_error)
             }), 500
 
         # --------------------------------------------------
-        # 🔥 Generate IPFS Metadata
+        # 🔥 IPFS METADATA
         # --------------------------------------------------
         try:
             metadata = generate_metadata(batch, ai_result)
@@ -101,7 +131,7 @@ def predict_batch(batch_id):
             }), 500
 
         # --------------------------------------------------
-        # 🔹 Save CID + Merkle to DB
+        # 🔹 SAVE CID + MERKLE
         # --------------------------------------------------
         try:
             batch.ipfs_cid = cid
@@ -110,12 +140,12 @@ def predict_batch(batch_id):
         except Exception as save_error:
             db.session.rollback()
             return jsonify({
-                "error": "Failed to save CID/Merkle",
+                "error": "Save failed",
                 "details": str(save_error)
             }), 500
 
         # --------------------------------------------------
-        # 🔥 FINAL RESPONSE
+        # 🔥 RESPONSE
         # --------------------------------------------------
         return jsonify({
             "batch_id": str(batch.batch_id),
@@ -135,7 +165,7 @@ def predict_batch(batch_id):
 
 
 # ======================================================
-# 🔎 GET AI RESULTS (Read Only)
+# 🔎 GET AI RESULTS
 # ======================================================
 @ai_bp.route("/ai/analyze-batch/<batch_id>", methods=["GET"])
 @jwt_required()
