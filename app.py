@@ -1,3 +1,4 @@
+import os
 import logging
 from datetime import timedelta
 from flask import Flask, jsonify, request
@@ -14,8 +15,12 @@ from routes.batch_routes import batch_bp
 from routes.ai_routes import ai_bp
 from routes.auth_routes import auth_bp
 
-# 🔥 AI SERVICE (Preload models once)
-from services.ai_service import load_models
+# AI Service (optional)
+try:
+    from services.ai_service import load_models
+    AI_AVAILABLE = True
+except:
+    AI_AVAILABLE = False
 
 
 # ======================================================
@@ -26,26 +31,31 @@ def create_app():
     app = Flask(__name__)
 
     # --------------------------------------------------
-    # Load Base Config
+    # Load Config
     # --------------------------------------------------
     app.config.from_object(Config)
 
     # --------------------------------------------------
-    # 🔐 JWT CONFIGURATION
+    # ENVIRONMENT
     # --------------------------------------------------
-    app.config["JWT_SECRET_KEY"] = "spinachchain_super_secure_fixed_key_2026"
+    ENV = os.getenv("FLASK_ENV", "production")
+
+    # --------------------------------------------------
+    # JWT CONFIGURATION
+    # --------------------------------------------------
+    app.config["JWT_SECRET_KEY"] = os.getenv("JWT_SECRET_KEY", "fallback_secret")
     app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(hours=24)
     app.config["JWT_TOKEN_LOCATION"] = ["headers"]
     app.config["JWT_HEADER_NAME"] = "Authorization"
     app.config["JWT_HEADER_TYPE"] = "Bearer"
 
     # --------------------------------------------------
-    # 🔥 IMAGE UPLOAD LIMIT (Important for AI)
+    # FILE SIZE LIMIT
     # --------------------------------------------------
-    app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024  # 10MB limit
+    app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024  # 10MB
 
     # --------------------------------------------------
-    # Logging Configuration
+    # LOGGING
     # --------------------------------------------------
     logging.basicConfig(
         level=logging.INFO,
@@ -55,18 +65,12 @@ def create_app():
     logging.info("🚀 Starting SpinachChain Backend...")
 
     # --------------------------------------------------
-    # ✅ GLOBAL CORS CONFIG
+    # CORS (IMPORTANT FOR DEPLOYMENT)
     # --------------------------------------------------
-    CORS(
-        app,
-        resources={r"/api/*": {"origins": "http://localhost:3000"}},
-        allow_headers=["Content-Type", "Authorization"],
-        methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-        supports_credentials=True
-    )
+    CORS(app, resources={r"/*": {"origins": "*"}})
 
     # --------------------------------------------------
-    # 🔥 Allow OPTIONS to bypass JWT
+    # HANDLE PREFLIGHT
     # --------------------------------------------------
     @app.before_request
     def handle_preflight():
@@ -74,13 +78,13 @@ def create_app():
             return app.make_default_options_response()
 
     # --------------------------------------------------
-    # Initialize Extensions
+    # INIT EXTENSIONS
     # --------------------------------------------------
     bcrypt.init_app(app)
     jwt.init_app(app)
 
     # --------------------------------------------------
-    # Initialize Database
+    # DATABASE INIT
     # --------------------------------------------------
     try:
         init_db(app)
@@ -95,38 +99,43 @@ def create_app():
         raise e
 
     # --------------------------------------------------
-    # 🔥 PRELOAD AI MODELS (Only Once)
+    # AI MODEL LOADING (SAFE)
     # --------------------------------------------------
-    try:
-        load_models()
-        logging.info("✅ AI Models Loaded Successfully")
-    except Exception as e:
-        logging.error(f"❌ AI Model Loading Failed: {e}")
-        raise e
+    if ENV != "production" and AI_AVAILABLE:
+        try:
+            load_models()
+            logging.info("✅ AI Models Loaded")
+            app.config["AI_LOADED"] = True
+        except Exception as e:
+            logging.warning(f"⚠️ AI load skipped: {e}")
+            app.config["AI_LOADED"] = False
+    else:
+        logging.info("🚫 AI disabled in production")
+        app.config["AI_LOADED"] = False
 
     # --------------------------------------------------
-    # Register Blueprints
+    # REGISTER ROUTES
     # --------------------------------------------------
     app.register_blueprint(sensor_bp, url_prefix="/api")
     app.register_blueprint(batch_bp, url_prefix="/api")
     app.register_blueprint(ai_bp, url_prefix="/api")
     app.register_blueprint(auth_bp, url_prefix="/api/auth")
 
-    logging.info("✅ Blueprints registered")
+    logging.info("✅ Routes registered")
 
     # --------------------------------------------------
-    # Health Check
+    # HEALTH CHECK
     # --------------------------------------------------
     @app.route("/")
     def health_check():
         return jsonify({
             "status": "SpinachChain Backend Running",
-            "environment": "development",
-            "ai_loaded": True
+            "environment": ENV,
+            "ai_loaded": app.config["AI_LOADED"]
         }), 200
 
     # --------------------------------------------------
-    # JWT Error Handlers
+    # JWT ERROR HANDLERS
     # --------------------------------------------------
     @jwt.unauthorized_loader
     def unauthorized_callback(callback):
@@ -141,11 +150,11 @@ def create_app():
         return jsonify({"error": "Token expired"}), 401
 
     # --------------------------------------------------
-    # Global Error Handler
+    # GLOBAL ERRORS
     # --------------------------------------------------
     @app.errorhandler(413)
     def file_too_large(e):
-        return jsonify({"error": "Uploaded file too large"}), 413
+        return jsonify({"error": "File too large"}), 413
 
     @app.errorhandler(500)
     def internal_error(e):
@@ -156,14 +165,14 @@ def create_app():
 
 
 # ======================================================
-# 🔥 CREATE APP INSTANCE
+# 🔥 APP INSTANCE
 # ======================================================
 
 app = create_app()
 
 
 # ======================================================
-# 🚀 RUN SERVER
+# 🚀 LOCAL RUN ONLY
 # ======================================================
 
 if __name__ == "__main__":
